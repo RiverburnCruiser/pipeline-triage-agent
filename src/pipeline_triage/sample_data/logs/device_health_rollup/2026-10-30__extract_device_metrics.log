@@ -1,0 +1,4 @@
+[2026-10-31T03:00:02.115+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 2
+[2026-10-31T03:00:02.890+0000] {extract.py:33} INFO - Querying device_metrics for 2026-10-30 (fleet_ids: all)
+[2026-10-31T03:06:44.207+0000] {extract.py:51} INFO - Extracted 48,912,004 metric rows for 61,204 devices to /staging/device_metrics/2026-10-30.parquet
+[2026-10-31T03:06:44.215+0000] {taskinstance.py:1400} INFO - Marking task as SUCCESS. dag_id=device_health_rollup, task_id=extract_device_metrics, execution_date=20261030T000000

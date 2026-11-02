@@ -1,0 +1,4 @@
+[2026-10-31T01:01:15.201+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 1
+[2026-10-31T01:01:15.640+0000] {validate.py:22} INFO - Loading expected schema contracts/trip_events.v8.json (14 columns)
+[2026-10-31T01:01:16.877+0000] {validate.py:66} INFO - Schema matches contract trip_events.v8
+[2026-10-31T01:01:16.880+0000] {taskinstance.py:1400} INFO - Marking task as SUCCESS. dag_id=trip_events_daily, task_id=validate_schema, execution_date=20261030T000000

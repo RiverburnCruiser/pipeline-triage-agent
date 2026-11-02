@@ -1,0 +1,6 @@
+[2026-10-31T01:00:03.874+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 3
+[2026-10-31T01:00:05.102+0000] {extract.py:41} INFO - Listing s3://fleet-raw/trip_events/dt=2026-10-30/
+[2026-10-31T01:00:06.455+0000] {extract.py:58} INFO - Found 37 Parquet objects (1.58 GiB)
+[2026-10-31T01:00:06.456+0000] {extract.py:63} WARNING - Object count 37 is below the 30-day minimum of 88; continuing because min_objects check is advisory
+[2026-10-31T01:01:12.990+0000] {extract.py:77} INFO - Staged 37 objects to /staging/trip_events/2026-10-30/
+[2026-10-31T01:01:12.998+0000] {taskinstance.py:1400} INFO - Marking task as SUCCESS. dag_id=trip_events_daily, task_id=extract_s3, execution_date=20261030T000000

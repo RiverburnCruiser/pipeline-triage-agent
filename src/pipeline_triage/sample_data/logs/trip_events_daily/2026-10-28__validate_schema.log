@@ -1,0 +1,14 @@
+[2026-10-29T01:02:52.004+0000] {taskinstance.py:1157} INFO - Dependencies all met for <TaskInstance: trip_events_daily.validate_schema scheduled__2026-10-28T00:00:00+00:00 [queued]>
+[2026-10-29T01:02:52.010+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 1
+[2026-10-29T01:02:52.446+0000] {validate.py:22} INFO - Loading expected schema contracts/trip_events.v7.json (14 columns)
+[2026-10-29T01:02:53.918+0000] {validate.py:35} INFO - Reading Parquet schema from /staging/trip_events/2026-10-28/part-00000.parquet
+[2026-10-29T01:02:54.031+0000] {validate.py:48} WARNING - Unexpected column in source: speed_kph (double)
+[2026-10-29T01:02:54.032+0000] {validate.py:52} WARNING - Expected column missing from source: speed_kmh (float)
+[2026-10-29T01:02:54.032+0000] {validate.py:56} WARNING - Type mismatch for column event_ts: expected timestamp[us, tz=UTC], got string
+[2026-10-29T01:02:54.040+0000] {taskinstance.py:2698} ERROR - Task failed with exception
+Traceback (most recent call last):
+  File "/opt/airflow/dags/trip_events/validate.py", line 61, in validate_schema
+    raise SchemaContractError(diff.summary())
+trip_events.errors.SchemaContractError: Source schema does not match contract trip_events.v7: 1 added column [speed_kph], 1 removed column [speed_kmh], 1 type change [event_ts: timestamp -> string]. Upstream producer release fleet-gateway 3.14.0 deployed 2026-10-28T18:40Z.
+[2026-10-29T01:02:54.051+0000] {taskinstance.py:1400} INFO - Marking task as FAILED. dag_id=trip_events_daily, task_id=validate_schema, execution_date=20261028T000000, start_date=20261029T010252, end_date=20261029T010254
+[2026-10-29T01:02:54.090+0000] {local_task_job_runner.py:228} INFO - Task exited with return code 1
