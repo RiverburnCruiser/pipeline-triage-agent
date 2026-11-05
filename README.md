@@ -94,7 +94,8 @@ tests/
 
 ## Local setup
 
-Requires Python 3.11 or newer.
+Requires Python 3.11 or newer. On Ubuntu/Debian, install the venv module first
+(`sudo apt install python3-venv`) and use `python3` where the commands below say `python`.
 
 ```bash
 git clone https://github.com/RiverburnCruiser/pipeline-triage-agent.git
