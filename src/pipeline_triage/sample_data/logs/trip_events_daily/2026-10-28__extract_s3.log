@@ -1,0 +1,6 @@
+[2026-10-29T01:00:04.112+0000] {taskinstance.py:1157} INFO - Dependencies all met for <TaskInstance: trip_events_daily.extract_s3 scheduled__2026-10-28T00:00:00+00:00 [queued]>
+[2026-10-29T01:00:04.120+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 3
+[2026-10-29T01:00:05.881+0000] {extract.py:41} INFO - Listing s3://fleet-raw/trip_events/dt=2026-10-28/
+[2026-10-29T01:00:07.302+0000] {extract.py:58} INFO - Found 96 Parquet objects (4.21 GiB)
+[2026-10-29T01:02:49.517+0000] {extract.py:77} INFO - Staged 96 objects to /staging/trip_events/2026-10-28/
+[2026-10-29T01:02:49.530+0000] {taskinstance.py:1400} INFO - Marking task as SUCCESS. dag_id=trip_events_daily, task_id=extract_s3, execution_date=20261028T000000, start_date=20261029T010004, end_date=20261029T010249

@@ -1,0 +1,4 @@
+[2026-10-31T01:01:19.004+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 2
+[2026-10-31T01:01:19.330+0000] {load.py:30} INFO - COPY INTO analytics.trip_events FROM @staging/trip_events/2026-10-30/ (37 files)
+[2026-10-31T01:04:02.718+0000] {load.py:44} INFO - Loaded 1,402,377 rows into analytics.trip_events partition dt=2026-10-30
+[2026-10-31T01:04:02.725+0000] {taskinstance.py:1400} INFO - Marking task as SUCCESS. dag_id=trip_events_daily, task_id=load_warehouse, execution_date=20261030T000000

@@ -1,0 +1,11 @@
+[2026-10-31T01:04:05.517+0000] {taskinstance.py:1359} INFO - Starting attempt 1 of 1
+[2026-10-31T01:04:05.910+0000] {reconcile.py:18} INFO - Comparing analytics.trip_events dt=2026-10-30 to trailing 6-day average
+[2026-10-31T01:04:07.233+0000] {reconcile.py:31} INFO - Loaded rows: 1402377, trailing average: 3711840.5, change: -62.2%
+[2026-10-31T01:04:07.234+0000] {reconcile.py:35} INFO - Source manifest for dt=2026-10-30 lists 96 objects; 37 present in s3://fleet-raw/trip_events/dt=2026-10-30/
+[2026-10-31T01:04:07.240+0000] {taskinstance.py:2698} ERROR - Task failed with exception
+Traceback (most recent call last):
+  File "/opt/airflow/dags/trip_events/reconcile.py", line 39, in reconcile_counts
+    raise ReconciliationError(f"Row count {loaded} is {pct:.1f}% vs baseline; threshold is -25.0%")
+trip_events.errors.ReconciliationError: Row count 1402377 is -62.2% vs baseline; threshold is -25.0%
+[2026-10-31T01:04:07.251+0000] {taskinstance.py:1400} INFO - Marking task as FAILED. dag_id=trip_events_daily, task_id=reconcile_counts, execution_date=20261030T000000
+[2026-10-31T01:04:07.288+0000] {local_task_job_runner.py:228} INFO - Task exited with return code 1
