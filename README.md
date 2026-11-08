@@ -131,7 +131,7 @@ reports whether the right runbook came back.
 | Embedder | hit@1 | hit@3 | MRR |
 | --- | --- | --- | --- |
 | Keyword baseline (`HashingEmbedder`, used in unit tests) | 80% | 100% | 0.87 |
-| bge-small-en-v1.5 (real model, checked in CI) | REAL_HIT1 | REAL_HIT3 | REAL_MRR |
+| bge-small-en-v1.5 (real model, checked in CI) | 100% | 100% | 1.00 |
 
 Five incidents is a small set, so read these as a regression check rather than a
 benchmark. The CI test requires the real model to rank the right runbook first
