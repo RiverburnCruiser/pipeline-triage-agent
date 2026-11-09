@@ -1,12 +1,16 @@
 [project]
 name = "pipeline-triage-agent"
 version = "0.1.0"
-description = "An AI agent that triages failed data pipeline runs. Stage 1: an MCP server over pipeline run metadata and logs."
+description = "An AI agent that triages failed data pipeline runs: MCP tools over pipeline runs and logs, plus runbook search with pgvector."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=2.3,<3",
     "pydantic>=2.7",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "numpy>=1.26",
+    "fastembed>=0.5",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +22,8 @@ dev = [
 
 [project.scripts]
 pipeline-triage-mcp = "pipeline_triage.mcp_server:main"
+pipeline-triage-ingest = "pipeline_triage.rag_cli:ingest"
+pipeline-triage-eval-retrieval = "pipeline_triage.rag_cli:eval_retrieval"
 
 [build-system]
 requires = ["hatchling"]
@@ -28,6 +34,10 @@ packages = ["src/pipeline_triage"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "db: needs PostgreSQL with pgvector (set TRIAGE_TEST_DATABASE_URL)",
+    "model: downloads the real embedding model (set TRIAGE_TEST_REAL_MODEL=1)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -40,3 +50,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["pgvector.*", "fastembed.*"]
+ignore_missing_imports = true

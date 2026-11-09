@@ -9,6 +9,7 @@ import pytest
 from mcp import Client
 
 from pipeline_triage.mcp_server import build_server
+from pipeline_triage.runbooks import RunbookIndex
 from pipeline_triage.store import RunStore
 
 # anyio's pytest plugin (installed with mcp) runs each test and its async fixtures
@@ -91,3 +92,15 @@ async def test_bad_input_returns_tool_error(
     result = await client.call_tool(tool, arguments)
     assert result.is_error
     assert message in str(result.content)
+
+
+@pytest.mark.db
+async def test_search_runbooks_is_exposed_when_an_index_is_given(
+    store: RunStore, hashing_index: RunbookIndex
+) -> None:
+    async with Client(build_server(store, hashing_index)) as client:
+        names = {t.name for t in (await client.list_tools()).tools}
+        assert "search_runbooks" in names
+        hits = (await call(client, "search_runbooks", query="pod OOMKilled SIGKILL", k=2))["result"]
+        assert hits[0]["runbook_id"] == "worker-oom"
+        assert "## Fix" in hits[0]["body"]

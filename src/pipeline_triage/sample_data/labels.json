@@ -1,0 +1,27 @@
+{
+  "trip_events_daily__2026-10-28": {
+    "failed_task": "validate_schema",
+    "root_cause": "schema_drift",
+    "runbook_id": "schema-drift"
+  },
+  "driver_scores_hourly__2026-10-29T03": {
+    "failed_task": "wait_for_trip_events",
+    "root_cause": "upstream_dependency",
+    "runbook_id": "upstream-sensor-timeout"
+  },
+  "vendor_payments_sync__2026-10-29": {
+    "failed_task": "extract_vendor_api",
+    "root_cause": "credential_expiry",
+    "runbook_id": "expired-credentials"
+  },
+  "device_health_rollup__2026-10-30": {
+    "failed_task": "aggregate_metrics",
+    "root_cause": "out_of_memory",
+    "runbook_id": "worker-oom"
+  },
+  "trip_events_daily__2026-10-30": {
+    "failed_task": "reconcile_counts",
+    "root_cause": "partial_source_load",
+    "runbook_id": "partial-source-load"
+  }
+}
