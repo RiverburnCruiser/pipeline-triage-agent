@@ -7,7 +7,8 @@
   "driver_scores_hourly__2026-10-29T03": {
     "failed_task": "wait_for_trip_events",
     "root_cause": "upstream_dependency",
-    "runbook_id": "upstream-sensor-timeout"
+    "runbook_id": "upstream-sensor-timeout",
+    "related_run_ids": ["trip_events_daily__2026-10-28"]
   },
   "vendor_payments_sync__2026-10-29": {
     "failed_task": "extract_vendor_api",

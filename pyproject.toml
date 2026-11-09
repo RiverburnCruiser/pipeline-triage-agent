@@ -15,11 +15,15 @@ dependencies = [
     "langgraph>=1.2",
     "langchain-google-genai>=4.4",
     "langchain-groq>=1.1",
+    "langgraph-checkpoint-postgres>=3.2",
+    "fastapi>=0.160",
+    "uvicorn>=0.50",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "httpx>=0.28",
     "ruff>=0.6",
     "mypy>=1.11",
 ]
@@ -29,6 +33,8 @@ pipeline-triage-mcp = "pipeline_triage.mcp_server:main"
 pipeline-triage-ingest = "pipeline_triage.rag_cli:ingest"
 pipeline-triage-eval-retrieval = "pipeline_triage.rag_cli:eval_retrieval"
 pipeline-triage-agent = "pipeline_triage.triage_cli:main"
+pipeline-triage-api = "pipeline_triage.api:main"
+pipeline-triage-eval-agent = "pipeline_triage.agent_eval:main"
 
 [build-system]
 requires = ["hatchling"]

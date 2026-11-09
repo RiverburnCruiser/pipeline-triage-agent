@@ -1,0 +1,103 @@
+name: agent eval
+
+# Runs the whole agent on the 5 sample incidents against a real model. A run takes
+# about 10 minutes on Groq's free tier and uses its quota, so it runs nightly and on
+# demand (Actions tab > agent eval > Run workflow), not on every push.
+#
+# Needs a repository secret with the provider's key: GROQ_API_KEY (the default),
+# GEMINI_API_KEY or ANTHROPIC_API_KEY. Without it the job skips with a notice.
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Model provider
+        type: choice
+        options: [groq, gemini, claude]
+        default: groq
+      model:
+        description: Model (empty for the provider's default)
+        required: false
+      min_correct:
+        description: Fail below this share of correct incidents (0 to 1)
+        default: "0.8"
+
+concurrency:
+  group: agent-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: triage
+          POSTGRES_PASSWORD: triage
+          POSTGRES_DB: triage
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triage"
+          --health-interval 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql://triage:triage@localhost:5432/triage
+      FASTEMBED_CACHE_PATH: /home/runner/.cache/fastembed
+      TRIAGE_PROVIDER: ${{ inputs.provider || 'groq' }}
+      MIN_CORRECT: ${{ inputs.min_correct || '0.8' }}
+    steps:
+      - name: Check for an API key
+        id: key
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          case "$TRIAGE_PROVIDER" in
+            groq) key="$GROQ_API_KEY"; name=GROQ_API_KEY ;;
+            gemini) key="$GEMINI_API_KEY"; name=GEMINI_API_KEY ;;
+            claude) key="$ANTHROPIC_API_KEY"; name=ANTHROPIC_API_KEY ;;
+          esac
+          if [ -z "$key" ]; then
+            echo "::notice::No $name secret, so the agent eval was skipped."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@v4
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - if: steps.key.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/fastembed
+          key: fastembed-bge-small-en-v1.5
+      - if: steps.key.outputs.present == 'true'
+        run: pip install -e .
+      - if: steps.key.outputs.present == 'true'
+        run: pipeline-triage-ingest
+      - name: Run the agent eval
+        if: steps.key.outputs.present == 'true'
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          # An empty TRIAGE_MODEL would override the default, so set it only when given.
+          if [ -n "$MODEL" ]; then export TRIAGE_MODEL="$MODEL"; fi
+          pipeline-triage-eval-agent --min-correct "$MIN_CORRECT" --json agent-eval.json
+      - if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval
+          path: agent-eval.json
+          if-no-files-found: ignore

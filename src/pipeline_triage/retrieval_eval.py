@@ -19,6 +19,8 @@ class IncidentLabel(BaseModel):
     failed_task: str
     root_cause: str
     runbook_id: str
+    related_run_ids: list[str] = []
+    """Runs a correct diagnosis must name, for an incident caused by another run."""
 
 
 class IncidentResult(BaseModel):
