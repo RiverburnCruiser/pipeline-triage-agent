@@ -13,7 +13,8 @@ The project is built in four stages. Three are done:
   pgvector, so a client can search them with an error message and get back the
   matching diagnosis and fix.
 - **Stage 3, triage agent:** a LangGraph agent that uses those tools through MCP,
-  asks Claude for a structured diagnosis, and pauses for a human to approve the fix.
+  asks Claude (or Gemini, which has a free tier) for a structured diagnosis, and
+  pauses for a human to approve the fix.
 
 ## Why MCP
 
@@ -51,7 +52,7 @@ flowchart LR
     INS -- stdio --> T
     AG -- stdio --> T
     AG -- stdio --> R
-    AG -- Messages API --> CL[Claude]
+    AG -- API --> CL[Claude or Gemini]
     T --> S --> D
     R --> I --> PG
     I --> E
@@ -144,7 +145,9 @@ for every incident.
 
 The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) state machine.
 It starts the MCP server as a subprocess and can only act through its tools, the
-same way Claude Code does. Claude is called through the official Anthropic SDK.
+same way Claude Code does. The model is Claude, called through the official Anthropic
+SDK, or Gemini through LangChain's Google GenAI integration (see
+[Free option: Gemini](#free-option-gemini)).
 
 ```mermaid
 flowchart LR
@@ -168,7 +171,8 @@ flowchart LR
    A human approves or rejects, and the graph resumes with that decision.
    Nothing is executed either way. Running approved fixes is deliberately out of scope.
 
-**Run it** (needs an [Anthropic API key](https://console.anthropic.com/)):
+**Run it** (needs an [Anthropic API key](https://console.anthropic.com/), or a free
+Gemini key as described below):
 
 ```bash
 export ANTHROPIC_API_KEY=...        # or put it in .env, which is git-ignored
@@ -200,11 +204,84 @@ for the diagnosis, and every call resends the investigation so far. Check the
 [pricing page](https://www.anthropic.com/pricing), and try `TRIAGE_MODEL=claude-sonnet-5-5`
 if you want a cheaper model.
 
+### Free option: Gemini
+
+The agent can run on Google's Gemini models instead, which have a free tier with no
+billing details required. `TRIAGE_PROVIDER` picks the model provider.
+
+1. Create a free API key in [Google AI Studio](https://aistudio.google.com/apikey).
+2. Add both lines to `.env`, without quotes. Quotes are only needed for values with
+   spaces or `#`:
+
+   ```bash
+   TRIAGE_PROVIDER=gemini
+   GEMINI_API_KEY=your-key       # GOOGLE_API_KEY works too
+   ```
+
+3. Load `.env` and run the agent as above: `pipeline-triage-agent`.
+
+A recorded run on `gemini-3.5-flash-lite`, with runbook search, on the incident that
+is a knock-on of another (output shortened):
+
+```
+Triaging driver_scores_hourly__2026-10-29T03
+  -> get_run_status(run_id='driver_scores_hourly__2026-10-29T03')
+  -> get_task_log(tail_lines=50, run_id='driver_scores_hourly__2026-10-29T03', task_id='wait_for_trip_events')
+  -> get_failed_runs(since='2026-10-28T00:00:00Z', dag_id='trip_events_daily')
+  -> get_run_status(run_id='trip_events_daily__2026-10-28')
+  -> get_task_log(run_id='trip_events_daily__2026-10-28', task_id='validate_schema', tail_lines=50)
+  -> search_runbooks(query='Source schema does not match contract trip_events.v7')
+  -> writing diagnosis
+
+## Triage: driver_scores_hourly__2026-10-29T03
+
+**Root cause:** schema_drift (high confidence)
+...
+**Runbook:** schema-drift
+...
+**Related runs:** trip_events_daily__2026-10-28
+
+Approve this fix? [y/N]
+```
+
+**Free-tier limits.** These are what we saw in November 2026; Google changes them,
+so check [the rate limits page](https://aistudio.google.com/docs/rate-limits).
+
+- **Requests per day, per model.** `gemini-3.5-flash` allowed 20 requests a day. One
+  triage makes about 8 (one per tool round, plus the diagnosis), so that is two or
+  three triages a day. Each model has its own quota, so when one runs out (HTTP 429)
+  switch with `TRIAGE_MODEL`, for example `gemini-3.5-flash-lite`.
+- **Busy models.** Free-tier models sometimes return HTTP 503 ("high demand") for a
+  while. The adapter retries five times with backoff, about 15 seconds in total, then
+  stops with a message suggesting another model.
+- **Model availability.** The default is `gemini-3.5-flash`. `gemini-2.5-flash` is
+  closed to new users. Run `python -c "from google import genai; print([m.name for m
+  in genai.Client().models.list()])"` to list the models your key can use.
+- **Your data.** Google's terms for the free tier allow it to use prompts to improve
+  its products. That is fine for the sample incidents here, but do not send real
+  production logs through a free-tier key.
+
+**How the adapter works.** `gemini.py` implements the same two-method `TriageModel`
+interface as the Claude model, so the graph, tools and approval step are unchanged.
+The graph keeps its history in the Claude message format, and the adapter translates
+it to LangChain messages for each call and back. Gemini 3 models attach a *thought
+signature* to every tool call and reject the next request if it is missing, so each
+assistant message also carries Gemini's own content under a `gemini` key, and it is
+replayed unchanged. `TRIAGE_EFFORT` applies to Claude only.
+
 **Tests without an API key.** `tests/test_agent.py` runs the real graph against the
 real MCP server with a scripted model in place of Claude, covering the tool loop,
 tool errors, the step limit and both approval outcomes. `tests/test_llm.py` checks
 the Claude requests (tools, effort, fallback, structured output) and refusal
-handling against a fake HTTP transport.
+handling against a fake HTTP transport. `tests/test_gemini.py` checks the Gemini
+adapter against a fake LangChain chat model: the history translation, that thought
+signatures survive a round trip, tool errors, structured output, safety stops and
+provider selection. Its last test runs a real triage on Gemini and only runs with
+`TRIAGE_TEST_GEMINI=1` (it uses about 8 requests of the daily quota):
+
+```bash
+TRIAGE_TEST_GEMINI=1 pytest -m gemini
+```
 
 ## Project layout
 
@@ -218,7 +295,8 @@ src/pipeline_triage/
   retrieval_eval.py  Scores runbook search against the labelled incidents
   rag_cli.py       pipeline-triage-ingest and pipeline-triage-eval-retrieval
   agent.py         The LangGraph triage graph
-  llm.py           TriageModel interface and the Claude implementation
+  llm.py           TriageModel interface, the Claude implementation, provider choice
+  gemini.py        The Gemini implementation (free tier) through LangChain
   diagnosis.py     The Diagnosis output model
   toolbox.py       MCP client wrapper that feeds tools to the agent
   triage_cli.py    pipeline-triage-agent
@@ -230,6 +308,7 @@ tests/
   test_retrieval_eval_model.py  Retrieval quality with the real model
   test_agent.py       The triage graph with a scripted model
   test_llm.py         Claude request shape and refusal handling
+  test_gemini.py      Gemini adapter with a fake chat model, plus an opt-in real run
 docker-compose.yml   Local PostgreSQL with pgvector
 ```
 
