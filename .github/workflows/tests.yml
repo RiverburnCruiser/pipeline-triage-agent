@@ -26,7 +26,7 @@ jobs:
           --health-retries 15
     env:
       DATABASE_URL: postgresql://triage:triage@localhost:5432/triage
-      TRIAGE_TEST_DATABASE_URL: postgresql://triage:triage@localhost:5432/triage
+      TRIAGE_TEST_DATABASE_URL: postgresql://triage:triage@localhost:5432/triage_test
       TRIAGE_TEST_REAL_MODEL: "1"
       FASTEMBED_CACHE_PATH: /home/runner/.cache/fastembed
     steps:

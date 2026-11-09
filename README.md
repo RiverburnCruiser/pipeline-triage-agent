@@ -199,6 +199,21 @@ Tests that need PostgreSQL run when `TRIAGE_TEST_DATABASE_URL` is set (it is in
 `.env.example`) and are skipped otherwise. The real-model retrieval test also needs
 `TRIAGE_TEST_REAL_MODEL=1`. Without Docker, `pytest` still runs everything else.
 
+The database tests use their own database, `triage_test`, in the same container.
+They drop and rebuild the `runbooks` and `runbook_chunks` tables, and some build
+them with the test embedder, so sharing a database with `DATABASE_URL` would wipe
+the real index. `search_runbooks` would then fail with `different vector dimensions`
+until you ran `pipeline-triage-ingest` again. To prevent that:
+
+- pytest creates `triage_test` on first use, so it works on an existing Docker
+  volume and in CI without any setup step.
+- pytest fails with an explanation if `TRIAGE_TEST_DATABASE_URL` and `DATABASE_URL`
+  point at the same database.
+
+If your `.env` was copied from an older `.env.example`, change
+`TRIAGE_TEST_DATABASE_URL` to end in `/triage_test`, then run
+`pipeline-triage-ingest` once to restore the real index.
+
 ### Running the server
 
 The server speaks MCP over stdio, so it will sit waiting for a client:
