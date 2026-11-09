@@ -13,6 +13,8 @@ dependencies = [
     "fastembed>=0.5",
     "anthropic>=2.6",
     "langgraph>=1.2",
+    "langchain-google-genai>=4.4",
+    "langchain-groq>=1.1",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +42,7 @@ testpaths = ["tests"]
 markers = [
     "db: needs PostgreSQL with pgvector (set TRIAGE_TEST_DATABASE_URL)",
     "model: downloads the real embedding model (set TRIAGE_TEST_REAL_MODEL=1)",
+    "live: calls a real model API (set TRIAGE_TEST_LIVE=gemini,groq and the API keys)",
 ]
 
 [tool.ruff]

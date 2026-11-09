@@ -13,7 +13,8 @@ The project is built in four stages. Three are done:
   pgvector, so a client can search them with an error message and get back the
   matching diagnosis and fix.
 - **Stage 3, triage agent:** a LangGraph agent that uses those tools through MCP,
-  asks Claude for a structured diagnosis, and pauses for a human to approve the fix.
+  asks Claude (or Gemini or Groq, which have free tiers) for a structured diagnosis, and
+  pauses for a human to approve the fix.
 
 ## Why MCP
 
@@ -51,7 +52,7 @@ flowchart LR
     INS -- stdio --> T
     AG -- stdio --> T
     AG -- stdio --> R
-    AG -- Messages API --> CL[Claude]
+    AG -- API --> CL[Claude, Gemini or Groq]
     T --> S --> D
     R --> I --> PG
     I --> E
@@ -144,7 +145,9 @@ for every incident.
 
 The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) state machine.
 It starts the MCP server as a subprocess and can only act through its tools, the
-same way Claude Code does. Claude is called through the official Anthropic SDK.
+same way Claude Code does. The model is Claude, called through the official Anthropic
+SDK, or Gemini or Groq through LangChain's chat model integrations (see
+[Free options: Gemini and Groq](#free-options-gemini-and-groq)).
 
 ```mermaid
 flowchart LR
@@ -168,7 +171,8 @@ flowchart LR
    A human approves or rejects, and the graph resumes with that decision.
    Nothing is executed either way. Running approved fixes is deliberately out of scope.
 
-**Run it** (needs an [Anthropic API key](https://console.anthropic.com/)):
+**Run it** (needs an [Anthropic API key](https://console.anthropic.com/), or a free
+Gemini key as described below):
 
 ```bash
 export ANTHROPIC_API_KEY=...        # or put it in .env, which is git-ignored
@@ -200,11 +204,117 @@ for the diagnosis, and every call resends the investigation so far. Check the
 [pricing page](https://www.anthropic.com/pricing), and try `TRIAGE_MODEL=claude-sonnet-5-5`
 if you want a cheaper model.
 
+### Free options: Gemini and Groq
+
+The agent can also run on Google's Gemini models or on open-weight models hosted by
+Groq. Both have free tiers that need no billing details. `TRIAGE_PROVIDER` picks the
+provider and `TRIAGE_MODEL` the model.
+
+1. Create a free API key: [Google AI Studio](https://aistudio.google.com/apikey) for
+   Gemini, or the [Groq console](https://console.groq.com/keys) for Groq.
+2. Add the provider and its key to `.env`, without quotes. Quotes are only needed for
+   values with spaces or `#`:
+
+   ```bash
+   TRIAGE_PROVIDER=groq          # or gemini
+   GROQ_API_KEY=your-key         # for Gemini: GEMINI_API_KEY (GOOGLE_API_KEY works too)
+   ```
+
+3. Load `.env` and run the agent as above: `pipeline-triage-agent`.
+
+A recorded run on Groq (`openai/gpt-oss-120b`) with runbook search (output shortened;
+it took 85 seconds, most of it waiting for the per-minute token limit):
+
+```
+Triaging vendor_payments_sync__2026-10-29
+  -> get_run_status(run_id='vendor_payments_sync__2026-10-29')
+  -> get_task_log(run_id='vendor_payments_sync__2026-10-29', tail_lines=200, task_id='extract_vendor_api')
+  -> get_failed_runs(dag_id=None, limit=20)
+  -> search_runbooks(k=5, query='Client secret has expired. Rotate the secret in the vendor portal')
+  -> writing diagnosis
+
+## Triage: vendor_payments_sync__2026-10-29
+
+**Root cause:** credential_expiry (high confidence)
+
+The run failed because the OAuth client secret used for the vendor API had expired;
+rotating the secret and updating the Airflow connection will fix it.
+...
+**Runbook:** expired-credentials
+
+**Proposed fix**
+1. Rotate the client secret in the vendor portal.
+2. Store the new secret in the secrets manager.
+3. Update the Airflow connection 'vendor_payments_api' to use the new secret.
+4. Trigger a rerun of the failed DAG (or the extract_vendor_api task).
+
+Approve this fix? [y/N]
+```
+
+**How they compared.** We ran the seeded incidents through the graph with runbook
+search and checked each diagnosis against `labels.json` (November 2026, one run each,
+so treat it as a smoke test rather than a benchmark):
+
+| | Groq `openai/gpt-oss-120b` | Gemini `gemini-3.5-flash-lite` |
+| --- | --- | --- |
+| Incidents run | all 5 | 2 (the daily quota allowed no more) |
+| Root cause and runbook right | 5 of 5 | 2 of 2 |
+| Related runs | sometimes adds unrelated runs | right on both |
+| Requests per triage | 5 to 11 | 5 to 6 (batches independent lookups) |
+| Time per triage | 1 to 3 minutes | 40 to 50 seconds |
+| Free-tier capacity | 1,000 requests a day, 8,000 tokens a minute | 20 requests a day per model |
+
+Both reach the right answer. Groq is the better default for development and for
+re-running the incidents, because its daily limit fits many triages. Gemini is quicker
+and slightly more precise per triage, but its daily limit runs out after two or three.
+
+**Free-tier limits and quirks.** These are what we saw in November 2026. Providers
+change them, so check the [Gemini](https://aistudio.google.com/docs/rate-limits) and
+[Groq](https://console.groq.com/docs/rate-limits) rate limit pages.
+
+- **Gemini: requests per day, per model.** `gemini-3.5-flash` allowed 20 requests a
+  day, and a triage makes 5 to 11 (one per tool round, plus the diagnosis). Each
+  model has its own quota, so when one runs out (HTTP 429) switch with `TRIAGE_MODEL`,
+  for example `gemini-3.5-flash-lite`. Some listed models had no free quota at all.
+- **Gemini: busy models.** Free-tier models sometimes return HTTP 503 ("high demand")
+  for a while. The adapter retries five times with backoff, about 15 seconds in total,
+  then stops with a message suggesting another model. `gemini-2.5-flash` is closed to
+  new users. Run `python -c "from google import genai; print([m.name for m in
+  genai.Client().models.list()])"` to list the models your key can use.
+- **Groq: tokens per minute.** Every round resends the whole investigation, so later
+  rounds go over 8,000 tokens a minute. The SDK waits for the `retry-after` time Groq
+  sends (up to six retries), which is why a triage takes minutes, not seconds.
+- **Groq: strict tool validation.** Groq checks each tool call against its schema and
+  rejects the whole reply when it does not match, for example `since="2026-10-28"` for
+  a date-time field. The adapter then asks the model again with the reason, up to
+  twice, without adding the note to the history.
+- **Your data.** Free tiers can come with different data terms from paid ones (Google's
+  allow it to use free-tier prompts to improve its products). That is fine for the
+  sample incidents here, but read the terms before sending real production logs.
+
+**How the adapter works.** `langchain_llm.py` wraps any LangChain chat model in the
+same two-method `TriageModel` interface as the Claude model, so the graph, tools and
+approval step are unchanged. The graph keeps its history in the Claude message format,
+and the adapter translates it to LangChain messages for each call and back. Gemini 3
+models attach a *thought signature* to every tool call and reject the next request if
+it is missing, so each assistant message also carries the provider's own content
+under a `native` key, and it is replayed unchanged. `TRIAGE_EFFORT` applies to Claude
+only.
+
 **Tests without an API key.** `tests/test_agent.py` runs the real graph against the
 real MCP server with a scripted model in place of Claude, covering the tool loop,
 tool errors, the step limit and both approval outcomes. `tests/test_llm.py` checks
 the Claude requests (tools, effort, fallback, structured output) and refusal
-handling against a fake HTTP transport.
+handling against a fake HTTP transport. `tests/test_langchain_llm.py` checks the
+Gemini and Groq adapter against a fake LangChain chat model: the history translation,
+that thought signatures survive a round trip, tool errors, rejected tool calls,
+structured output, safety stops, provider selection and the CLI's error messages. Its
+live tests run a real triage and only run for the providers named in
+`TRIAGE_TEST_LIVE` (each uses 5 to 11 requests of the free quota):
+
+```bash
+TRIAGE_TEST_LIVE=gemini,groq pytest -m live
+```
 
 ## Project layout
 
@@ -218,7 +328,8 @@ src/pipeline_triage/
   retrieval_eval.py  Scores runbook search against the labelled incidents
   rag_cli.py       pipeline-triage-ingest and pipeline-triage-eval-retrieval
   agent.py         The LangGraph triage graph
-  llm.py           TriageModel interface and the Claude implementation
+  llm.py           TriageModel interface, the Claude implementation, provider choice
+  langchain_llm.py Gemini and Groq (free tiers) through LangChain chat models
   diagnosis.py     The Diagnosis output model
   toolbox.py       MCP client wrapper that feeds tools to the agent
   triage_cli.py    pipeline-triage-agent
@@ -230,6 +341,7 @@ tests/
   test_retrieval_eval_model.py  Retrieval quality with the real model
   test_agent.py       The triage graph with a scripted model
   test_llm.py         Claude request shape and refusal handling
+  test_langchain_llm.py  Gemini/Groq adapter with a fake chat model, plus opt-in live runs
 docker-compose.yml   Local PostgreSQL with pgvector
 ```
 

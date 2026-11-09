@@ -1,8 +1,9 @@
 """The language model behind the agent, behind a two-method interface.
 
-`ClaudeTriageModel` calls Claude through the official Anthropic SDK. Tests use a
-scripted model with the same interface, so the graph, the MCP wiring and the
-approval step are tested without an API key or network access.
+`ClaudeTriageModel` calls Claude through the official Anthropic SDK, and
+langchain_llm.py wraps Gemini and Groq, which have free tiers. TRIAGE_PROVIDER picks
+one. Tests use a scripted model with the same interface, so the graph, the MCP wiring
+and the approval step are tested without an API key or network access.
 """
 
 from __future__ import annotations
@@ -105,3 +106,19 @@ class ClaudeTriageModel:
             details = getattr(response, "stop_details", None)
             category = getattr(details, "category", None)
             raise ModelRefusedError(f"The model declined this request (category: {category}).")
+
+
+PROVIDERS = ("claude", "gemini", "groq")
+
+
+def triage_model_from_env() -> TriageModel:
+    """The model named by TRIAGE_PROVIDER ("claude" by default) and TRIAGE_MODEL."""
+    provider = os.environ.get("TRIAGE_PROVIDER", "claude").strip().lower()
+    if provider == "claude":
+        return ClaudeTriageModel()
+    if provider in ("gemini", "groq"):
+        from pipeline_triage import langchain_llm
+
+        build = langchain_llm.gemini_model if provider == "gemini" else langchain_llm.groq_model
+        return build(os.environ.get("TRIAGE_MODEL"))
+    raise ValueError(f"Unknown TRIAGE_PROVIDER {provider!r}. Use one of: {', '.join(PROVIDERS)}.")
