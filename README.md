@@ -5,7 +5,7 @@ engineer would: it finds the failed run, reads the failing task's log, checks
 whether table volumes look wrong, looks up the matching runbook, and proposes a
 root cause and a fix for a human to approve.
 
-The project is built in four stages. Three are done:
+The project was built in four stages, and all four are done:
 
 - **Stage 1, MCP server:** gives any LLM client safe, read-only access to pipeline
   run status, task logs and table row counts.
@@ -15,6 +15,10 @@ The project is built in four stages. Three are done:
 - **Stage 3, triage agent:** a LangGraph agent that uses those tools through MCP,
   asks Claude (or Gemini or Groq, which have free tiers) for a structured diagnosis, and
   pauses for a human to approve the fix.
+- **Stage 4, ship it:** an eval suite that scores the whole agent on the seeded
+  incidents (run on demand and nightly in GitHub Actions), a FastAPI service for
+  starting triages and approving fixes over HTTP, and a Docker Compose stack that
+  runs everything with one command.
 
 ## Why MCP
 
@@ -32,8 +36,12 @@ flowchart LR
     subgraph clients[MCP clients]
         CC[Claude Code / Claude Desktop]
         INS[MCP Inspector]
-        AG["LangGraph triage agent<br/>(pipeline-triage-agent)"]
+        AG["LangGraph triage agent<br/>(CLI, HTTP API, eval)"]
     end
+
+    U[You: curl, /docs, CI] -- HTTP --> API[FastAPI service<br/>pipeline-triage-api]
+    API --> AG
+    API -- checkpoints --> PG
 
     subgraph server[pipeline-triage MCP server]
         T[Pipeline tools<br/>get_failed_runs<br/>get_run_status<br/>get_task_log<br/>query_row_counts<br/>list_tables]
@@ -83,7 +91,7 @@ itself instead of guessing.
 
 `src/pipeline_triage/sample_data/` holds ten Airflow-style runs across four DAGs.
 Five of them failed, each with a different root cause. These are the seeded
-incidents that the stage 4 evals will score the agent against.
+incidents that the agent eval scores the agent against (see Agent eval).
 
 | Run | Failed task | Root cause shown in the logs |
 | --- | --- | --- |
@@ -316,6 +324,79 @@ live tests run a real triage and only run for the providers named in
 TRIAGE_TEST_LIVE=gemini,groq pytest -m live
 ```
 
+## HTTP API
+
+`pipeline-triage-api` serves the agent over HTTP (FastAPI). It starts the MCP server
+over stdio, the same way the CLI does, and runs each triage as a background job:
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /health` | Liveness, and whether runbook search is on |
+| `GET /runs/failed?limit=20` | Failed runs the agent can triage |
+| `POST /triages` | Start a triage. Body `{"run_id": "..."}`, or `{}` for the latest failure. Returns 202 with a triage id. Add `?wait=true` to get the diagnosis in the response |
+| `GET /triages/{id}` | Status (`investigating`, `awaiting_approval`, `approved`, `rejected`, `failed`), the diagnosis and the decision |
+| `POST /triages/{id}/decision` | Body `{"approved": true, "note": "..."}`. Returns 409 unless the triage is awaiting approval |
+
+```bash
+pipeline-triage-api                  # http://127.0.0.1:8000, interactive docs at /docs
+curl -s -X POST 'localhost:8000/triages?wait=true' -H 'content-type: application/json' \
+     -d '{"run_id": "vendor_payments_sync__2026-10-29"}'
+curl -s -X POST localhost:8000/triages/<triage_id>/decision \
+     -H 'content-type: application/json' -d '{"approved": true, "note": "rotating the secret"}'
+```
+
+With `DATABASE_URL` set, paused triages are checkpointed in PostgreSQL (LangGraph's
+Postgres checkpointer), so a triage that is waiting for approval survives a restart of
+the service. Without it they are kept in memory. As with the CLI, an approved fix is
+recorded, not executed.
+
+## Run everything with Docker Compose
+
+```bash
+cp .env.example .env     # then set TRIAGE_PROVIDER and its API key
+docker compose up --build
+```
+
+This starts PostgreSQL with pgvector, runs `pipeline-triage-ingest` once to index the
+runbooks, then starts the API on http://localhost:8000 (open `/docs`). The embedding
+model downloads on the first run and is kept in a volume. The stack is three light
+containers: the database, the one-off ingest job and the API.
+
+For local development, `docker compose up -d postgres` starts only the database.
+
+## Agent eval
+
+The retrieval eval scores runbook search alone. The agent eval scores the whole agent:
+for each of the 5 seeded incidents it runs the graph (real model, real MCP server,
+runbook search) up to the approval pause and checks the diagnosis against
+`labels.json`:
+
+- **Root cause** matches the label.
+- **Runbook** matches the label (scored only when runbook search is on).
+- **Related runs** names the upstream run, for the knock-on sensor timeout.
+
+An incident counts as correct when the root cause and the runbook are both right.
+Errors, such as a used-up free-tier quota, count as wrong and are shown in the report.
+
+```bash
+set -a && source .env && set +a
+pipeline-triage-eval-agent --min-correct 0.8 --json agent-eval.json
+```
+
+It prints a Markdown table (one row per incident, with tool calls and seconds), writes
+the JSON report, and exits with status 1 when fewer than `--min-correct` of the
+incidents are correct. On Groq's free tier a full run takes about 10 minutes.
+
+**In GitHub Actions** the `agent eval` workflow runs nightly and on demand (Actions >
+agent eval > Run workflow, where you can pick the provider and model). It needs a
+repository secret with the provider's key, `GROQ_API_KEY` by default
+(Settings > Secrets and variables > Actions); without one it skips with a notice. It
+does not run on every pull request, because each run uses free-tier quota. The report
+appears on the run's summary page and as an `agent-eval` artifact.
+
+The harness itself is tested without a key (`tests/test_agent_eval.py`), with scripted
+models that are always right or always wrong.
+
 ## Project layout
 
 ```
@@ -333,6 +414,10 @@ src/pipeline_triage/
   diagnosis.py     The Diagnosis output model
   toolbox.py       MCP client wrapper that feeds tools to the agent
   triage_cli.py    pipeline-triage-agent
+  errors.py        Plain-language messages for errors a user can fix
+  service.py       Triages as background jobs, with the approval step
+  api.py           FastAPI app (entry point: pipeline-triage-api)
+  agent_eval.py    Scores the whole agent on the labelled incidents
   sample_data/     Seeded runs, row counts, task logs, runbooks and labels
 tests/
   test_store.py       Unit tests for RunStore
@@ -342,7 +427,11 @@ tests/
   test_agent.py       The triage graph with a scripted model
   test_llm.py         Claude request shape and refusal handling
   test_langchain_llm.py  Gemini/Groq adapter with a fake chat model, plus opt-in live runs
-docker-compose.yml   Local PostgreSQL with pgvector
+  test_api.py         The HTTP API, including a pending approval surviving a restart
+  test_agent_eval.py  The agent eval harness with scripted models
+Dockerfile           Image for the API and the ingest job
+docker-compose.yml   PostgreSQL with pgvector, runbook ingest and the API
+.github/workflows/   tests (every push and PR), agent eval (nightly and on demand)
 ```
 
 ## Local setup
@@ -362,7 +451,7 @@ Start PostgreSQL with pgvector (needs Docker) and load the environment variables
 
 ```bash
 cp .env.example .env
-docker compose up -d
+docker compose up -d postgres
 set -a && source .env && set +a     # exports DATABASE_URL for this terminal
 ```
 
@@ -465,7 +554,8 @@ Add this to `claude_desktop_config.json`, using the absolute path printed by
 | 1. MCP server | Read-only tools over run status, task logs and row counts, with seeded incidents and tests. | Done |
 | 2. Runbook RAG | Runbooks embedded into PostgreSQL with pgvector, exposed as a `search_runbooks` tool, with a retrieval evaluation over the seeded incidents. | Done |
 | 3. LangGraph agent | An agent that calls the MCP tools and the runbook search, returns a structured diagnosis, and waits for human approval. | Done |
-| 4. Ship it | FastAPI service, Docker Compose (app + PostgreSQL), tracing with Langfuse, and an eval suite over the seeded incidents running in GitHub Actions. | Planned |
+| 4. Ship it | An agent eval over the seeded incidents in GitHub Actions, a FastAPI service with approvals checkpointed in PostgreSQL, and Docker Compose for the whole stack. | Done |
+| Next | Tracing with Langfuse (its free cloud tier, to keep the local stack light), and executing approved fixes. | Planned |
 
 ## Design notes
 

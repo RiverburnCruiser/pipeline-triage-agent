@@ -13,16 +13,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from typing import Any
 
-import groq
-from anthropic import AuthenticationError
-from langchain_core.exceptions import ModelError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
-from mcp import Client, StdioServerParameters
+from mcp import Client
 
 from pipeline_triage.agent import (
     Decision,
@@ -31,8 +27,9 @@ from pipeline_triage.agent import (
     initial_state,
     thread_config,
 )
-from pipeline_triage.llm import ModelRefusedError, triage_model_from_env
-from pipeline_triage.toolbox import McpToolbox
+from pipeline_triage.errors import explain_error
+from pipeline_triage.llm import triage_model_from_env
+from pipeline_triage.toolbox import McpToolbox, stdio_server
 
 
 def _print_progress(update: dict[str, Any]) -> None:
@@ -53,8 +50,7 @@ def _ask_for_decision() -> Decision:
 
 
 async def _latest_failed_run(toolbox: McpToolbox) -> str:
-    result = await toolbox.call("get_failed_runs", {"limit": 1})
-    runs = (result.data or {}).get("result", [])
+    runs = await toolbox.failed_runs(limit=1)
     if not runs:
         sys.exit("No failed runs found.")
     return str(runs[0]["run_id"])
@@ -62,10 +58,7 @@ async def _latest_failed_run(toolbox: McpToolbox) -> str:
 
 async def run(run_id: str | None) -> None:
     model = triage_model_from_env()
-    server = StdioServerParameters(
-        command=sys.executable, args=["-m", "pipeline_triage.mcp_server"], env=dict(os.environ)
-    )
-    async with Client(server) as client:
+    async with Client(stdio_server()) as client:
         toolbox = await McpToolbox(client).load()
         run_id = run_id or await _latest_failed_run(toolbox)
         if "search_runbooks" not in toolbox.names:
@@ -94,55 +87,6 @@ def _first_error(group: BaseExceptionGroup[BaseException]) -> BaseException:
     return error
 
 
-_HINTS = {
-    ("gemini", 429): "This model's quota is used up. Gemini's free tier limits requests per"
-    " minute and per day for each model, so wait, or switch with TRIAGE_MODEL (see README).",
-    ("groq", 429): "Groq's free-tier limit was reached: tokens per minute, or requests per day."
-    " Wait a minute and try again, or switch with TRIAGE_MODEL (see README).",
-    ("groq", 413): "The request is larger than Groq's free-tier tokens-per-minute limit."
-    " Try a model with a higher limit (see README).",
-    ("gemini", 503): "The model is overloaded. Try again, or switch with TRIAGE_MODEL.",
-    ("groq", 503): "The model is overloaded. Try again, or switch with TRIAGE_MODEL.",
-}
-
-
-def _api_error(provider: str, code: object, message: str) -> str:
-    hint = _HINTS.get((provider, code), "") if isinstance(code, int) else ""
-    first_line = message.splitlines()[0][:300] if message else "no details"
-    return f"{provider.capitalize()} request failed: {first_line}\n{hint}".strip()
-
-
-def _explain(error: BaseException) -> str | None:
-    """A one-line message and next step for an error the user can fix, or None."""
-    message = str(error)
-    if isinstance(error, AuthenticationError):
-        return "Claude rejected the credentials. Check ANTHROPIC_API_KEY (see README)."
-    if isinstance(error, TypeError) and "authentication method" in message:
-        # Raised by the Anthropic SDK when it finds no credentials at all.
-        return "No Claude credentials found. Set ANTHROPIC_API_KEY (see README)."
-    if isinstance(error, ModelRefusedError):
-        return message
-    if isinstance(error, groq.AuthenticationError):
-        return "Groq rejected the API key. Check GROQ_API_KEY (see README)."
-    if isinstance(error, groq.APIStatusError):
-        return _api_error("groq", error.status_code, message)
-    if isinstance(error, groq.GroqError) and "api_key" in message:
-        return "No Groq API key found. Set GROQ_API_KEY (see README)."
-    if isinstance(error, ModelError):
-        # LangChain's base class for Gemini's errors. The HTTP status is on the
-        # underlying google-genai error.
-        if "API key not valid" in message:
-            return "Gemini rejected the API key. Check GEMINI_API_KEY (see README)."
-        code = getattr(error, "code", None) or getattr(error.__cause__, "code", None)
-        return _api_error("gemini", code, message)
-    if isinstance(error, ValueError):
-        if "API key required" in message:
-            return "No Gemini API key found. Set GEMINI_API_KEY (see README)."
-        if "TRIAGE_PROVIDER" in message:
-            return message
-    return None
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Triage a failed pipeline run with an AI agent.")
     parser.add_argument("run_id", nargs="?", help="Run to triage (default: most recent failure)")
@@ -151,7 +95,7 @@ def main() -> None:
     try:
         asyncio.run(run(args.run_id))
     except* Exception as group:
-        message = _explain(_first_error(group))
+        message = explain_error(_first_error(group))
         if message is None:
             raise
         sys.exit(message)

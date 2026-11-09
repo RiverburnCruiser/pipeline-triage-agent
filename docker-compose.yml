@@ -1,6 +1,23 @@
-# Local PostgreSQL with the pgvector extension for the runbook index.
-#   docker compose up -d
-# Credentials come from .env (copy .env.example). They are for local development only.
+# The whole stack: PostgreSQL with pgvector, a one-off job that indexes the runbooks,
+# and the triage API on http://localhost:8000 (interactive docs at /docs).
+#
+#   docker compose up --build           everything (needs a model key in .env)
+#   docker compose up -d postgres       only the database, for local development
+#
+# Settings come from .env (copy .env.example). The credentials are for local use only.
+x-app: &app
+  build: .
+  image: pipeline-triage-agent
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # Inside Compose the database is the postgres service, not localhost.
+    DATABASE_URL: postgresql://${POSTGRES_USER:-triage}:${POSTGRES_PASSWORD:-triage}@postgres:5432/${POSTGRES_DB:-triage}
+  volumes:
+    # The embedding model (about 130 MB) downloads once and is kept here.
+    - fastembed:/var/cache/fastembed
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -17,5 +34,22 @@ services:
       interval: 2s
       retries: 15
 
+  ingest:
+    <<: *app
+    command: ["pipeline-triage-ingest"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
+  fastembed:

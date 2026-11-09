@@ -24,6 +24,7 @@ from mcp import Client
 from pydantic import Field
 
 from pipeline_triage.agent import build_graph, diagnosis_of, initial_state, thread_config
+from pipeline_triage.errors import explain_error
 from pipeline_triage.langchain_llm import (
     LangChainTriageModel,
     gemini_model,
@@ -34,7 +35,6 @@ from pipeline_triage.llm import ClaudeTriageModel, ModelRefusedError, triage_mod
 from pipeline_triage.mcp_server import build_server
 from pipeline_triage.store import RunStore
 from pipeline_triage.toolbox import McpToolbox
-from pipeline_triage.triage_cli import _explain
 
 pytestmark = pytest.mark.anyio
 
@@ -216,11 +216,11 @@ def _groq_error(status: int) -> groq.APIStatusError:
 
 
 def test_cli_explains_provider_errors() -> None:
-    assert "GROQ_API_KEY" in (_explain(_groq_error(401)) or "")
-    assert "tokens per minute" in (_explain(_groq_error(429)) or "")
-    assert "GROQ_API_KEY" in (_explain(groq.GroqError("The api_key client option ...")) or "")
-    assert "TRIAGE_PROVIDER" in (_explain(ValueError("Unknown TRIAGE_PROVIDER 'x'.")) or "")
-    assert _explain(RuntimeError("something else")) is None
+    assert "GROQ_API_KEY" in (explain_error(_groq_error(401)) or "")
+    assert "tokens per minute" in (explain_error(_groq_error(429)) or "")
+    assert "GROQ_API_KEY" in (explain_error(groq.GroqError("The api_key client option ...")) or "")
+    assert "TRIAGE_PROVIDER" in (explain_error(ValueError("Unknown TRIAGE_PROVIDER 'x'.")) or "")
+    assert explain_error(RuntimeError("something else")) is None
 
 
 @pytest.fixture

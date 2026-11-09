@@ -7,10 +7,12 @@ MCP server exposes, so the same agent works against any server with these tools.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass
 from typing import Any
 
-from mcp import Client
+from mcp import Client, StdioServerParameters
 from mcp.types import TextContent
 
 
@@ -53,3 +55,17 @@ class McpToolbox:
         else:
             text = "\n".join(c.text for c in result.content if isinstance(c, TextContent))
         return ToolResult(text=text, data=data, is_error=bool(result.is_error))
+
+    async def failed_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Failed runs, newest first, as get_failed_runs returns them."""
+        result = await self.call("get_failed_runs", {"limit": limit})
+        if result.is_error:
+            raise RuntimeError(result.text)
+        return list((result.data or {}).get("result", []))
+
+
+def stdio_server() -> StdioServerParameters:
+    """Run this package's MCP server as a subprocess, the way Claude Code does."""
+    return StdioServerParameters(
+        command=sys.executable, args=["-m", "pipeline_triage.mcp_server"], env=dict(os.environ)
+    )
