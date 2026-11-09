@@ -42,16 +42,31 @@ Investigate before concluding:
 3. When the failure could be about data volume, check the row counts of the affected table.
 4. When the failure could be caused by another pipeline, check whether related DAGs
    failed around the same time, and say which run is the root and which is a knock-on.
-5. If search_runbooks is available, search it with the key error lines and follow the
-   matching runbook's diagnosis steps.
-
+{runbook_step}
+When lookups do not depend on each other, request them together in one turn.
 Base every claim on what the tools returned. When you have enough evidence, stop
 calling tools and write a short summary of what you found."""
 
+# Only offered when the server has runbook search: naming a tool the model was not
+# given makes some models call it anyway.
+RUNBOOK_STEP = """\
+5. Search the runbooks (search_runbooks) with the key error lines and follow the
+   matching runbook's diagnosis steps.
+"""
+
 DIAGNOSE_PROMPT = """\
 Now give your diagnosis of run {run_id} as structured output. Quote evidence from the
-tool results. Use the runbook id exactly as search_runbooks returned it, or null if you
+tool results. The root cause is why this run failed: if it failed only because another
+run failed, for example a sensor waiting on it, use upstream_dependency, pick the
+runbook for that, list the other run in related_run_ids, and name its root cause in
+the summary. Use the runbook id exactly as search_runbooks returned it, or null if you
 did not find a matching runbook. Use low confidence if the evidence is incomplete."""
+
+
+def system_prompt(tool_names: set[str]) -> str:
+    return SYSTEM_PROMPT.format(
+        runbook_step=RUNBOOK_STEP if "search_runbooks" in tool_names else ""
+    )
 
 
 class Decision(TypedDict):
@@ -77,8 +92,10 @@ def build_graph(
     checkpointer: BaseCheckpointSaver[Any],
     max_tool_rounds: int = MAX_TOOL_ROUNDS,
 ) -> CompiledStateGraph[TriageState, None, TriageState, TriageState]:
+    system = system_prompt(toolbox.names)
+
     async def investigate(state: TriageState) -> TriageState:
-        reply = await model.next_turn(SYSTEM_PROMPT, state["messages"], toolbox.definitions)
+        reply = await model.next_turn(system, state["messages"], toolbox.definitions)
         return {"messages": [*state["messages"], reply]}
 
     async def run_tools(state: TriageState) -> TriageState:
@@ -123,7 +140,7 @@ def build_graph(
                 }
             )
         messages.append({"role": "user", "content": DIAGNOSE_PROMPT.format(run_id=state["run_id"])})
-        diagnosis = await model.diagnose(SYSTEM_PROMPT, messages)
+        diagnosis = await model.diagnose(system, messages)
         return {"messages": messages, "diagnosis": diagnosis.model_dump()}
 
     def approve(state: TriageState) -> TriageState:

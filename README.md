@@ -13,7 +13,7 @@ The project is built in four stages. Three are done:
   pgvector, so a client can search them with an error message and get back the
   matching diagnosis and fix.
 - **Stage 3, triage agent:** a LangGraph agent that uses those tools through MCP,
-  asks Claude (or Gemini, which has a free tier) for a structured diagnosis, and
+  asks Claude (or Gemini or Groq, which have free tiers) for a structured diagnosis, and
   pauses for a human to approve the fix.
 
 ## Why MCP
@@ -52,7 +52,7 @@ flowchart LR
     INS -- stdio --> T
     AG -- stdio --> T
     AG -- stdio --> R
-    AG -- API --> CL[Claude or Gemini]
+    AG -- API --> CL[Claude, Gemini or Groq]
     T --> S --> D
     R --> I --> PG
     I --> E
@@ -146,8 +146,8 @@ for every incident.
 The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) state machine.
 It starts the MCP server as a subprocess and can only act through its tools, the
 same way Claude Code does. The model is Claude, called through the official Anthropic
-SDK, or Gemini through LangChain's Google GenAI integration (see
-[Free option: Gemini](#free-option-gemini)).
+SDK, or Gemini or Groq through LangChain's chat model integrations (see
+[Free options: Gemini and Groq](#free-options-gemini-and-groq)).
 
 ```mermaid
 flowchart LR
@@ -204,83 +204,116 @@ for the diagnosis, and every call resends the investigation so far. Check the
 [pricing page](https://www.anthropic.com/pricing), and try `TRIAGE_MODEL=claude-sonnet-5-5`
 if you want a cheaper model.
 
-### Free option: Gemini
+### Free options: Gemini and Groq
 
-The agent can run on Google's Gemini models instead, which have a free tier with no
-billing details required. `TRIAGE_PROVIDER` picks the model provider.
+The agent can also run on Google's Gemini models or on open-weight models hosted by
+Groq. Both have free tiers that need no billing details. `TRIAGE_PROVIDER` picks the
+provider and `TRIAGE_MODEL` the model.
 
-1. Create a free API key in [Google AI Studio](https://aistudio.google.com/apikey).
-2. Add both lines to `.env`, without quotes. Quotes are only needed for values with
-   spaces or `#`:
+1. Create a free API key: [Google AI Studio](https://aistudio.google.com/apikey) for
+   Gemini, or the [Groq console](https://console.groq.com/keys) for Groq.
+2. Add the provider and its key to `.env`, without quotes. Quotes are only needed for
+   values with spaces or `#`:
 
    ```bash
-   TRIAGE_PROVIDER=gemini
-   GEMINI_API_KEY=your-key       # GOOGLE_API_KEY works too
+   TRIAGE_PROVIDER=groq          # or gemini
+   GROQ_API_KEY=your-key         # for Gemini: GEMINI_API_KEY (GOOGLE_API_KEY works too)
    ```
 
 3. Load `.env` and run the agent as above: `pipeline-triage-agent`.
 
-A recorded run on `gemini-3.5-flash-lite`, with runbook search, on the incident that
-is a knock-on of another (output shortened):
+A recorded run on Groq (`openai/gpt-oss-120b`) with runbook search (output shortened;
+it took 85 seconds, most of it waiting for the per-minute token limit):
 
 ```
-Triaging driver_scores_hourly__2026-10-29T03
-  -> get_run_status(run_id='driver_scores_hourly__2026-10-29T03')
-  -> get_task_log(tail_lines=50, run_id='driver_scores_hourly__2026-10-29T03', task_id='wait_for_trip_events')
-  -> get_failed_runs(since='2026-10-28T00:00:00Z', dag_id='trip_events_daily')
-  -> get_run_status(run_id='trip_events_daily__2026-10-28')
-  -> get_task_log(run_id='trip_events_daily__2026-10-28', task_id='validate_schema', tail_lines=50)
-  -> search_runbooks(query='Source schema does not match contract trip_events.v7')
+Triaging vendor_payments_sync__2026-10-29
+  -> get_run_status(run_id='vendor_payments_sync__2026-10-29')
+  -> get_task_log(run_id='vendor_payments_sync__2026-10-29', tail_lines=200, task_id='extract_vendor_api')
+  -> get_failed_runs(dag_id=None, limit=20)
+  -> search_runbooks(k=5, query='Client secret has expired. Rotate the secret in the vendor portal')
   -> writing diagnosis
 
-## Triage: driver_scores_hourly__2026-10-29T03
+## Triage: vendor_payments_sync__2026-10-29
 
-**Root cause:** schema_drift (high confidence)
+**Root cause:** credential_expiry (high confidence)
+
+The run failed because the OAuth client secret used for the vendor API had expired;
+rotating the secret and updating the Airflow connection will fix it.
 ...
-**Runbook:** schema-drift
-...
-**Related runs:** trip_events_daily__2026-10-28
+**Runbook:** expired-credentials
+
+**Proposed fix**
+1. Rotate the client secret in the vendor portal.
+2. Store the new secret in the secrets manager.
+3. Update the Airflow connection 'vendor_payments_api' to use the new secret.
+4. Trigger a rerun of the failed DAG (or the extract_vendor_api task).
 
 Approve this fix? [y/N]
 ```
 
-**Free-tier limits.** These are what we saw in November 2026; Google changes them,
-so check [the rate limits page](https://aistudio.google.com/docs/rate-limits).
+**How they compared.** We ran the seeded incidents through the graph with runbook
+search and checked each diagnosis against `labels.json` (November 2026, one run each,
+so treat it as a smoke test rather than a benchmark):
 
-- **Requests per day, per model.** `gemini-3.5-flash` allowed 20 requests a day. One
-  triage makes about 8 (one per tool round, plus the diagnosis), so that is two or
-  three triages a day. Each model has its own quota, so when one runs out (HTTP 429)
-  switch with `TRIAGE_MODEL`, for example `gemini-3.5-flash-lite`.
-- **Busy models.** Free-tier models sometimes return HTTP 503 ("high demand") for a
-  while. The adapter retries five times with backoff, about 15 seconds in total, then
-  stops with a message suggesting another model.
-- **Model availability.** The default is `gemini-3.5-flash`. `gemini-2.5-flash` is
-  closed to new users. Run `python -c "from google import genai; print([m.name for m
-  in genai.Client().models.list()])"` to list the models your key can use.
-- **Your data.** Google's terms for the free tier allow it to use prompts to improve
-  its products. That is fine for the sample incidents here, but do not send real
-  production logs through a free-tier key.
+| | Groq `openai/gpt-oss-120b` | Gemini `gemini-3.5-flash-lite` |
+| --- | --- | --- |
+| Incidents run | all 5 | 2 (the daily quota allowed no more) |
+| Root cause and runbook right | 5 of 5 | 2 of 2 |
+| Related runs | sometimes adds unrelated runs | right on both |
+| Requests per triage | 5 to 11 | 5 to 6 (batches independent lookups) |
+| Time per triage | 1 to 3 minutes | 40 to 50 seconds |
+| Free-tier capacity | 1,000 requests a day, 8,000 tokens a minute | 20 requests a day per model |
 
-**How the adapter works.** `gemini.py` implements the same two-method `TriageModel`
-interface as the Claude model, so the graph, tools and approval step are unchanged.
-The graph keeps its history in the Claude message format, and the adapter translates
-it to LangChain messages for each call and back. Gemini 3 models attach a *thought
-signature* to every tool call and reject the next request if it is missing, so each
-assistant message also carries Gemini's own content under a `gemini` key, and it is
-replayed unchanged. `TRIAGE_EFFORT` applies to Claude only.
+Both reach the right answer. Groq is the better default for development and for
+re-running the incidents, because its daily limit fits many triages. Gemini is quicker
+and slightly more precise per triage, but its daily limit runs out after two or three.
+
+**Free-tier limits and quirks.** These are what we saw in November 2026. Providers
+change them, so check the [Gemini](https://aistudio.google.com/docs/rate-limits) and
+[Groq](https://console.groq.com/docs/rate-limits) rate limit pages.
+
+- **Gemini: requests per day, per model.** `gemini-3.5-flash` allowed 20 requests a
+  day, and a triage makes 5 to 11 (one per tool round, plus the diagnosis). Each
+  model has its own quota, so when one runs out (HTTP 429) switch with `TRIAGE_MODEL`,
+  for example `gemini-3.5-flash-lite`. Some listed models had no free quota at all.
+- **Gemini: busy models.** Free-tier models sometimes return HTTP 503 ("high demand")
+  for a while. The adapter retries five times with backoff, about 15 seconds in total,
+  then stops with a message suggesting another model. `gemini-2.5-flash` is closed to
+  new users. Run `python -c "from google import genai; print([m.name for m in
+  genai.Client().models.list()])"` to list the models your key can use.
+- **Groq: tokens per minute.** Every round resends the whole investigation, so later
+  rounds go over 8,000 tokens a minute. The SDK waits for the `retry-after` time Groq
+  sends (up to six retries), which is why a triage takes minutes, not seconds.
+- **Groq: strict tool validation.** Groq checks each tool call against its schema and
+  rejects the whole reply when it does not match, for example `since="2026-10-28"` for
+  a date-time field. The adapter then asks the model again with the reason, up to
+  twice, without adding the note to the history.
+- **Your data.** Free tiers can come with different data terms from paid ones (Google's
+  allow it to use free-tier prompts to improve its products). That is fine for the
+  sample incidents here, but read the terms before sending real production logs.
+
+**How the adapter works.** `langchain_llm.py` wraps any LangChain chat model in the
+same two-method `TriageModel` interface as the Claude model, so the graph, tools and
+approval step are unchanged. The graph keeps its history in the Claude message format,
+and the adapter translates it to LangChain messages for each call and back. Gemini 3
+models attach a *thought signature* to every tool call and reject the next request if
+it is missing, so each assistant message also carries the provider's own content
+under a `native` key, and it is replayed unchanged. `TRIAGE_EFFORT` applies to Claude
+only.
 
 **Tests without an API key.** `tests/test_agent.py` runs the real graph against the
 real MCP server with a scripted model in place of Claude, covering the tool loop,
 tool errors, the step limit and both approval outcomes. `tests/test_llm.py` checks
 the Claude requests (tools, effort, fallback, structured output) and refusal
-handling against a fake HTTP transport. `tests/test_gemini.py` checks the Gemini
-adapter against a fake LangChain chat model: the history translation, that thought
-signatures survive a round trip, tool errors, structured output, safety stops and
-provider selection. Its last test runs a real triage on Gemini and only runs with
-`TRIAGE_TEST_GEMINI=1` (it uses about 8 requests of the daily quota):
+handling against a fake HTTP transport. `tests/test_langchain_llm.py` checks the
+Gemini and Groq adapter against a fake LangChain chat model: the history translation,
+that thought signatures survive a round trip, tool errors, rejected tool calls,
+structured output, safety stops, provider selection and the CLI's error messages. Its
+live tests run a real triage and only run for the providers named in
+`TRIAGE_TEST_LIVE` (each uses 5 to 11 requests of the free quota):
 
 ```bash
-TRIAGE_TEST_GEMINI=1 pytest -m gemini
+TRIAGE_TEST_LIVE=gemini,groq pytest -m live
 ```
 
 ## Project layout
@@ -296,7 +329,7 @@ src/pipeline_triage/
   rag_cli.py       pipeline-triage-ingest and pipeline-triage-eval-retrieval
   agent.py         The LangGraph triage graph
   llm.py           TriageModel interface, the Claude implementation, provider choice
-  gemini.py        The Gemini implementation (free tier) through LangChain
+  langchain_llm.py Gemini and Groq (free tiers) through LangChain chat models
   diagnosis.py     The Diagnosis output model
   toolbox.py       MCP client wrapper that feeds tools to the agent
   triage_cli.py    pipeline-triage-agent
@@ -308,7 +341,7 @@ tests/
   test_retrieval_eval_model.py  Retrieval quality with the real model
   test_agent.py       The triage graph with a scripted model
   test_llm.py         Claude request shape and refusal handling
-  test_gemini.py      Gemini adapter with a fake chat model, plus an opt-in real run
+  test_langchain_llm.py  Gemini/Groq adapter with a fake chat model, plus opt-in live runs
 docker-compose.yml   Local PostgreSQL with pgvector
 ```
 

@@ -14,7 +14,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from mcp import Client
 
-from pipeline_triage.agent import build_graph, diagnosis_of, initial_state, thread_config
+from pipeline_triage.agent import (
+    build_graph,
+    diagnosis_of,
+    initial_state,
+    system_prompt,
+    thread_config,
+)
 from pipeline_triage.diagnosis import Diagnosis
 from pipeline_triage.llm import Message
 from pipeline_triage.mcp_server import build_server
@@ -151,3 +157,8 @@ def test_diagnosis_markdown() -> None:
     assert text.startswith(f"## Triage: {RUN_ID}")
     assert "1. Rotate the client secret" in text
     assert "**Runbook:** expired-credentials" in text
+
+
+def test_system_prompt_names_runbook_search_only_when_offered() -> None:
+    assert "search_runbooks" not in system_prompt({"get_run_status", "get_task_log"})
+    assert "search_runbooks" in system_prompt({"get_run_status", "search_runbooks"})
