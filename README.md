@@ -5,22 +5,24 @@ engineer would: it finds the failed run, reads the failing task's log, checks
 whether table volumes look wrong, looks up the matching runbook, and proposes a
 root cause and a fix for a human to approve.
 
-The project is built in four stages. Two are done:
+The project is built in four stages. Three are done:
 
 - **Stage 1, MCP server:** gives any LLM client safe, read-only access to pipeline
   run status, task logs and table row counts.
 - **Stage 2, runbook search (RAG):** runbooks embedded into PostgreSQL with
   pgvector, so a client can search them with an error message and get back the
   matching diagnosis and fix.
+- **Stage 3, triage agent:** a LangGraph agent that uses those tools through MCP,
+  asks Claude for a structured diagnosis, and pauses for a human to approve the fix.
 
 ## Why MCP
 
 The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) is a standard
 way to expose tools to LLM applications. Think of it as USB-C for AI tools: the
 server is written once, and any MCP client can plug into it, whether that is
-Claude Code, Claude Desktop, the MCP Inspector, or the LangGraph agent coming in
-stage 3. The agent never touches files or databases directly; it can only call
-the tools below, and every tool is read-only.
+Claude Code, Claude Desktop, the MCP Inspector, or this project's own LangGraph
+agent. The agent never touches files or databases directly; it can only call the
+tools below, and every tool is read-only.
 
 ## Architecture
 
@@ -29,7 +31,7 @@ flowchart LR
     subgraph clients[MCP clients]
         CC[Claude Code / Claude Desktop]
         INS[MCP Inspector]
-        AG["LangGraph agent<br/>(stage 3)"]
+        AG["LangGraph triage agent<br/>(pipeline-triage-agent)"]
     end
 
     subgraph server[pipeline-triage MCP server]
@@ -47,8 +49,9 @@ flowchart LR
     CC -- stdio --> T
     CC -- stdio --> R
     INS -- stdio --> T
-    AG -. stdio .-> T
-    AG -. stdio .-> R
+    AG -- stdio --> T
+    AG -- stdio --> R
+    AG -- Messages API --> CL[Claude]
     T --> S --> D
     R --> I --> PG
     I --> E
@@ -137,6 +140,72 @@ Five incidents is a small set, so read these as a regression check rather than a
 benchmark. The CI test requires the real model to rank the right runbook first
 for every incident.
 
+## Triage agent
+
+The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) state machine.
+It starts the MCP server as a subprocess and can only act through its tools, the
+same way Claude Code does. Claude is called through the official Anthropic SDK.
+
+```mermaid
+flowchart LR
+    S((start)) --> I[investigate<br/>Claude picks the next tool]
+    I -- tool calls --> T[run_tools<br/>calls the MCP server]
+    T --> I
+    I -- enough evidence,<br/>or 12 tool rounds --> D[diagnose<br/>structured output]
+    D --> A[approve<br/>pauses for a human]
+    A --> E((end))
+```
+
+1. **investigate / run_tools** loop: Claude reads the run status, the failing log,
+   row counts and related runs, and searches the runbooks, one round of tool calls
+   at a time. Tool errors go back to Claude as errors so it can correct itself.
+   The loop stops when Claude has enough evidence, or after 12 rounds.
+2. **diagnose:** one more call returns a validated `Diagnosis`: root cause (one of a
+   fixed set of categories), summary, quoted evidence, runbook id, fix steps,
+   related runs and confidence. It is a Pydantic model enforced with structured
+   outputs, so the next stage's evals can compare it with `labels.json` field by field.
+3. **approve:** the graph pauses with LangGraph's `interrupt()` and a checkpointer.
+   A human approves or rejects, and the graph resumes with that decision.
+   Nothing is executed either way. Running approved fixes is deliberately out of scope.
+
+**Run it** (needs an [Anthropic API key](https://console.anthropic.com/)):
+
+```bash
+export ANTHROPIC_API_KEY=...        # or put it in .env, which is git-ignored
+pipeline-triage-agent                                    # most recent failed run
+pipeline-triage-agent vendor_payments_sync__2026-10-29   # a specific run
+```
+
+```
+Triaging vendor_payments_sync__2026-10-29
+  -> get_run_status(run_id='vendor_payments_sync__2026-10-29')
+  -> get_task_log(run_id='vendor_payments_sync__2026-10-29', task_id='extract_vendor_api')
+  -> search_runbooks(query='HTTP 401 invalid_client Client secret has expired')
+  -> writing diagnosis
+
+## Triage: vendor_payments_sync__2026-10-29
+**Root cause:** credential_expiry (high confidence)
+...
+Approve this fix? [y/N]
+```
+
+The output above shows the shape, not a recorded run. With `DATABASE_URL` set
+(see Local setup) the agent also gets `search_runbooks`.
+
+**Model settings.** The default model is `claude-opus-5-5` at `medium` effort.
+Override them with `TRIAGE_MODEL` and `TRIAGE_EFFORT`. Requests opt in to the API's
+server-side fallback, so a request declined by a safety classifier is retried on a
+fallback model instead of failing. Each triage makes one call per tool round plus one
+for the diagnosis, and every call resends the investigation so far. Check the
+[pricing page](https://www.anthropic.com/pricing), and try `TRIAGE_MODEL=claude-sonnet-5-5`
+if you want a cheaper model.
+
+**Tests without an API key.** `tests/test_agent.py` runs the real graph against the
+real MCP server with a scripted model in place of Claude, covering the tool loop,
+tool errors, the step limit and both approval outcomes. `tests/test_llm.py` checks
+the Claude requests (tools, effort, fallback, structured output) and refusal
+handling against a fake HTTP transport.
+
 ## Project layout
 
 ```
@@ -148,12 +217,19 @@ src/pipeline_triage/
   runbooks.py      Runbook loading, section chunking, RunbookIndex (pgvector)
   retrieval_eval.py  Scores runbook search against the labelled incidents
   rag_cli.py       pipeline-triage-ingest and pipeline-triage-eval-retrieval
+  agent.py         The LangGraph triage graph
+  llm.py           TriageModel interface and the Claude implementation
+  diagnosis.py     The Diagnosis output model
+  toolbox.py       MCP client wrapper that feeds tools to the agent
+  triage_cli.py    pipeline-triage-agent
   sample_data/     Seeded runs, row counts, task logs, runbooks and labels
 tests/
   test_store.py       Unit tests for RunStore
   test_mcp_server.py  End-to-end tests through a real MCP client
   test_runbooks.py    Chunking, indexing and search (database tests need Postgres)
   test_retrieval_eval_model.py  Retrieval quality with the real model
+  test_agent.py       The triage graph with a scripted model
+  test_llm.py         Claude request shape and refusal handling
 docker-compose.yml   Local PostgreSQL with pgvector
 ```
 
@@ -276,13 +352,13 @@ Add this to `claude_desktop_config.json`, using the absolute path printed by
 | --- | --- | --- |
 | 1. MCP server | Read-only tools over run status, task logs and row counts, with seeded incidents and tests. | Done |
 | 2. Runbook RAG | Runbooks embedded into PostgreSQL with pgvector, exposed as a `search_runbooks` tool, with a retrieval evaluation over the seeded incidents. | Done |
-| 3. LangGraph agent | An agent that calls the MCP tools and the runbook search, classifies the root cause, drafts a fix, and waits for human approval before any action. | Planned |
+| 3. LangGraph agent | An agent that calls the MCP tools and the runbook search, returns a structured diagnosis, and waits for human approval. | Done |
 | 4. Ship it | FastAPI service, Docker Compose (app + PostgreSQL), tracing with Langfuse, and an eval suite over the seeded incidents running in GitHub Actions. | Planned |
 
 ## Design notes
 
-- **Read-only by design.** Every tool is annotated `readOnlyHint`. The only path
-  to an action will be the human approval step in stage 3.
+- **Read-only by design.** Every tool is annotated `readOnlyHint`, and the agent's
+  approval step records a decision without executing anything.
 - **No client-controlled file paths.** Log locations come from `runs.json`, and
   the store still refuses any path that resolves outside the data directory.
 - **Internal fields stay internal.** The log file path is excluded from tool

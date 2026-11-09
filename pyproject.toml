@@ -1,7 +1,7 @@
 [project]
 name = "pipeline-triage-agent"
 version = "0.1.0"
-description = "An AI agent that triages failed data pipeline runs: MCP tools over pipeline runs and logs, plus runbook search with pgvector."
+description = "An AI agent that triages failed data pipeline runs: a LangGraph agent over MCP tools for pipeline runs, logs and pgvector runbook search."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,6 +11,8 @@ dependencies = [
     "pgvector>=0.3",
     "numpy>=1.26",
     "fastembed>=0.5",
+    "anthropic>=2.6",
+    "langgraph>=1.2",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +26,7 @@ dev = [
 pipeline-triage-mcp = "pipeline_triage.mcp_server:main"
 pipeline-triage-ingest = "pipeline_triage.rag_cli:ingest"
 pipeline-triage-eval-retrieval = "pipeline_triage.rag_cli:eval_retrieval"
+pipeline-triage-agent = "pipeline_triage.triage_cli:main"
 
 [build-system]
 requires = ["hatchling"]
