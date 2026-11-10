@@ -45,9 +45,14 @@ class IncidentScore(BaseModel):
     runbook_id: str | None = None
     expected_related: list[str] = []
     related_run_ids: list[str] = []
-    tool_calls: int = 0
+    tools_called: list[str] = []
+    """Tool names in the order the agent called them, to explain a miss."""
     seconds: float = 0.0
     error: str | None = None
+
+    @property
+    def tool_calls(self) -> int:
+        return len(self.tools_called)
 
     @property
     def root_cause_ok(self) -> bool:
@@ -107,14 +112,14 @@ class AgentEvalReport(BaseModel):
         return sum(values) / len(values) if values else 0.0
 
 
-def _count_tool_calls(state: dict[str, Any]) -> int:
-    return sum(
-        1
+def _tools_called(state: dict[str, Any]) -> list[str]:
+    return [
+        str(block["name"])
         for message in state.get("messages", [])
         if message["role"] == "assistant"
         for block in message["content"]
         if block.get("type") == "tool_use"
-    )
+    ]
 
 
 async def evaluate(
@@ -141,7 +146,7 @@ async def evaluate(
             score.root_cause = diagnosis.root_cause
             score.runbook_id = diagnosis.runbook_id
             score.related_run_ids = diagnosis.related_run_ids
-            score.tool_calls = _count_tool_calls(state)
+            score.tools_called = _tools_called(state)
         except Exception as error:
             score.error = explain_error(error) or f"{type(error).__name__}: {error}"
         score.seconds = round(time.perf_counter() - started, 1)
