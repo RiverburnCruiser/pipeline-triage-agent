@@ -79,7 +79,10 @@ async def test_scores_each_incident_against_its_label(toolbox: McpToolbox) -> No
     errored = by_run.pop("vendor_payments_sync__2026-10-29")
     assert errored.error == "RuntimeError: quota used up"
     assert not errored.root_cause_ok
-    assert all(s.root_cause_ok and s.related_ok and s.tool_calls == 1 for s in by_run.values())
+    assert all(
+        s.root_cause_ok and s.related_ok and s.tools_called == ["get_run_status"]
+        for s in by_run.values()
+    )
     # No DATABASE_URL in the test server, so the runbook is not scored.
     assert not report.runbook_search
     assert report.correct_rate == pytest.approx(0.8)

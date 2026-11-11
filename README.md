@@ -387,6 +387,25 @@ It prints a Markdown table (one row per incident, with tool calls and seconds), 
 the JSON report, and exits with status 1 when fewer than `--min-correct` of the
 incidents are correct. On Groq's free tier a full run takes about 10 minutes.
 
+**First result** (November 10, 2026, Groq `openai/gpt-oss-120b` with runbook search,
+one run):
+
+| Incident | Root cause | Runbook | Related runs | Tool calls | Seconds |
+| --- | --- | --- | --- | --- | --- |
+| `trip_events_daily__2026-10-28` | schema_drift (yes) | schema-drift (yes) | - | 3 | 47 |
+| `driver_scores_hourly__2026-10-29T03` | upstream_dependency (yes) | none (**no**) | yes | 8 | 199 |
+| `vendor_payments_sync__2026-10-29` | credential_expiry (yes) | expired-credentials (yes) | - | 4 | 129 |
+| `device_health_rollup__2026-10-30` | out_of_memory (yes) | worker-oom (yes) | - | 8 | 141 |
+| `trip_events_daily__2026-10-30` | partial_source_load (yes) | partial-source-load (yes) | - | 9 | 228 |
+
+**4 of 5 correct (80%)**: root cause 5 of 5, runbook 4 of 5, and the knock-on sensor
+timeout named its upstream run. Mean 6.4 tool calls and 149 seconds per triage. The one
+miss is the knock-on incident: the agent found the cause and the upstream run but
+returned no runbook. The JSON report now lists the tools each triage called
+(`tools_called`), so a miss like this shows whether the agent searched the runbooks at
+all. One run is a smoke test, not a benchmark: run it a few times before reading much
+into a single miss.
+
 **In GitHub Actions** the `agent eval` workflow runs nightly and on demand (Actions >
 agent eval > Run workflow, where you can pick the provider and model). It needs a
 repository secret with the provider's key, `GROQ_API_KEY` by default
